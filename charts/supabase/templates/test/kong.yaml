@@ -12,7 +12,9 @@ spec:
   template:
     spec:
       containers:
-        - env:
+        - name: test-kong
+          {{- if .Values.secret.dashboard }}
+          env:
             - name: DASHBOARD_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -33,7 +35,7 @@ spec:
                   name: {{ include "supabase.secret.dashboard" . }}
                   key: password
                   {{- end }}
-          name: test-kong
+          {{- end }}
           image: kdevup/curljq
           imagePullPolicy: IfNotPresent
           command:
