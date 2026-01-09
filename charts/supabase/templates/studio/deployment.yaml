@@ -87,6 +87,7 @@ spec:
                   {{- end }}
 
 
+            {{- if .Values.secret.dashboard }}
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -97,6 +98,7 @@ spec:
                   name: {{ include "supabase.secret.dashboard" . }}
                   key: openAiApiKey
                   {{- end }}
+            {{- end }}
 
             - name: SUPABASE_ANON_KEY
               valueFrom:
