@@ -1,0 +1,203 @@
+{{- if .Values.migrations.enabled -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "supabase.fullname" . }}-migrations-{{ .Release.Revision }}
+  labels:
+    {{- include "supabase.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrations
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": {{ .Values.migrations.hookWeight | default "0" | quote }}
+    "helm.sh/hook-delete-policy": {{ .Values.migrations.hookDeletePolicy | default "before-hook-creation" }}
+spec:
+  {{- if .Values.migrations.ttlSecondsAfterFinished }}
+  ttlSecondsAfterFinished: {{ .Values.migrations.ttlSecondsAfterFinished }}
+  {{- end }}
+  backoffLimit: {{ .Values.migrations.backoffLimit | default 3 }}
+  template:
+    metadata:
+      labels:
+        {{- include "supabase.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrations
+      {{- with .Values.migrations.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.migrations.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migrations.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      restartPolicy: {{ .Values.migrations.restartPolicy | default "OnFailure" }}
+      initContainers:
+        - name: clone-repo
+          image: {{ .Values.migrations.gitImage.repository }}:{{ .Values.migrations.gitImage.tag }}
+          imagePullPolicy: {{ .Values.migrations.gitImage.pullPolicy }}
+          {{- with .Values.migrations.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.migrations.git.accessTokenSecretRef }}
+          env:
+            - name: GIT_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.migrations.git.accessTokenSecretRef }}
+                  key: {{ .Values.migrations.git.accessTokenSecretRefKey | default "accessToken" }}
+          {{- end }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              {{- if .Values.migrations.git.accessTokenSecretRef }}
+              # Inject PAT into repository URL
+              REPO_URL=$(echo "{{ .Values.migrations.git.repository }}" | sed "s|https://|https://${GIT_ACCESS_TOKEN}@|")
+              {{- else }}
+              REPO_URL="{{ .Values.migrations.git.repository }}"
+              {{- end }}
+              echo "Cloning repository..."
+              git clone --depth=1 "$REPO_URL" /repo
+              cd /repo
+              echo "Fetching ref: {{ .Values.migrations.git.ref }}"
+              git fetch --depth=1 origin {{ .Values.migrations.git.ref }}
+              git checkout {{ .Values.migrations.git.ref }}
+              echo "Git clone completed successfully"
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+        - name: wait-for-db
+          image: {{ .Values.migrations.image.repository }}:{{ .Values.migrations.image.tag }}
+          imagePullPolicy: {{ .Values.migrations.image.pullPolicy }}
+          {{- with .Values.migrations.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Waiting for database to be ready..."
+              MAX_RETRIES={{ .Values.migrations.waitForDb.maxRetries | default 60 }}
+              RETRY_INTERVAL={{ .Values.migrations.waitForDb.retryInterval | default 5 }}
+              for i in $(seq 1 $MAX_RETRIES); do
+                if pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -q; then
+                  echo "Database is ready!"
+                  exit 0
+                fi
+                echo "Attempt $i/$MAX_RETRIES: Database not ready, waiting ${RETRY_INTERVAL}s..."
+                sleep $RETRY_INTERVAL
+              done
+              echo "ERROR: Database did not become ready after $((MAX_RETRIES * RETRY_INTERVAL)) seconds"
+              exit 1
+          env:
+            - name: POSTGRES_HOST
+              value: {{ .Values.migrations.environment.DB_HOST | default (include "supabase.db.fullname" .) }}
+            - name: POSTGRES_PORT
+              value: {{ .Values.migrations.environment.DB_PORT | default "5432" | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.migrations.environment.DB_USER | default "postgres" }}
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.secret.db.secretRef }}
+                  name: {{ .Values.secret.db.secretRef }}
+                  key: {{ .Values.secret.db.secretRefKey.database | default "database" }}
+                  {{- else }}
+                  name: {{ include "supabase.secret.db" . }}
+                  key: database
+                  {{- end }}
+      containers:
+        - name: migrate
+          image: {{ .Values.migrations.supabaseImage.repository }}:{{ .Values.migrations.supabaseImage.tag }}
+          imagePullPolicy: {{ .Values.migrations.supabaseImage.pullPolicy }}
+          workingDir: /repo
+          {{- with .Values.migrations.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Running migrations..."
+              DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=${POSTGRES_SSLMODE}"
+              {{- if .Values.migrations.command }}
+              {{ .Values.migrations.command }}
+              {{- else }}
+              supabase db push --debug --db-url "$DATABASE_URL"
+              {{- end }}
+              echo "Migrations completed successfully!"
+          env:
+            - name: POSTGRES_HOST
+              value: {{ .Values.migrations.environment.DB_HOST | default (include "supabase.db.fullname" .) }}
+            - name: POSTGRES_PORT
+              value: {{ .Values.migrations.environment.DB_PORT | default "5432" | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.migrations.environment.DB_USER | default "postgres" }}
+            - name: POSTGRES_SSLMODE
+              value: {{ .Values.migrations.environment.DB_SSL | default "disable" }}
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.secret.db.secretRef }}
+                  name: {{ .Values.secret.db.secretRef }}
+                  key: {{ .Values.secret.db.secretRefKey.database | default "database" }}
+                  {{- else }}
+                  name: {{ include "supabase.secret.db" . }}
+                  key: database
+                  {{- end }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.secret.db.secretRef }}
+                  name: {{ .Values.secret.db.secretRef }}
+                  key: {{ .Values.secret.db.secretRefKey.password | default "password" }}
+                  {{- else }}
+                  name: {{ include "supabase.secret.db" . }}
+                  key: password
+                  {{- end }}
+            {{- range $key, $value := .Values.migrations.extraEnv }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- with .Values.migrations.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+            {{- with .Values.migrations.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.migrations.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: repo
+          emptyDir: {}
+        {{- with .Values.migrations.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.migrations.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migrations.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migrations.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

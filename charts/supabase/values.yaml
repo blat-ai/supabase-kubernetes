@@ -12,6 +12,7 @@
 # |-- 11. Vector
 # |-- 12. Functions
 # |-- 13. Minio
+# |-- 14. Migrations
 
 secret:
   # jwt will be used to reference secret in multiple services:
@@ -1186,6 +1187,102 @@ minio:
     maxReplicas: 100
     targetCPUUtilizationPercentage: 80
     # targetMemoryUtilizationPercentage: 80
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Database Migrations from Git Repository
+# Runs as a post-install and post-upgrade Helm hook
+# Uses supabase db push to apply migrations from a cloned git repository
+migrations:
+  # Enable migrations job
+  enabled: false
+  # Git repository configuration
+  git:
+    # Git repository URL (HTTPS or SSH)
+    repository: ""
+    # Git ref to checkout (commit SHA, branch name, tag)
+    ref: "main"
+    # Secret containing PAT (Personal Access Token) for private repositories
+    # The token will be used as: https://TOKEN@github.com/...
+    # accessTokenSecretRef: ""
+    # Key name in the secret (default: accessToken)
+    # accessTokenSecretRefKey: "accessToken"
+  # Container image for git clone init container
+  gitImage:
+    repository: alpine/git
+    pullPolicy: IfNotPresent
+    tag: "latest"
+  # Container image for wait-for-db init container (should include pg_isready)
+  image:
+    repository: postgres
+    pullPolicy: IfNotPresent
+    tag: "17-alpine"
+  # Container image for running migrations (should include supabase CLI)
+  supabaseImage:
+    repository: ghcr.io/blat-ai/supabase-cli
+    pullPolicy: IfNotPresent
+    tag: "2.72.5"
+  # Optional: override the default migration command (supabase db push)
+  # command: "supabase db push --db-url \"$DATABASE_URL\""
+  imagePullSecrets: []
+  # Wait for database settings
+  waitForDb:
+    maxRetries: 60
+    retryInterval: 5
+  # Database connection settings (overrides)
+  environment:
+    # Override the database hostname if using external database
+    # DB_HOST: DATABASE.NAMESPACE.svc.cluster.local
+    DB_USER: postgres
+    DB_PORT: 5432
+    DB_SSL: disable  # disable, allow, prefer, require, verify-ca, verify-full
+  # Additional environment variables
+  extraEnv: {}
+  # Reference to external secrets/configmaps for environment variables
+  envFrom: []
+    # - secretRef:
+    #     name: env-secret
+  # Helm hook configuration
+  hookWeight: "0"
+  hookDeletePolicy: "before-hook-creation"
+  # Job configuration
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 3
+  restartPolicy: OnFailure
+  # Pod configuration
+  podAnnotations: {}
+  podSecurityContext: {}
+    # fsGroup: 2000
+  securityContext: {}
+    # capabilities:
+    #   drop:
+    #   - ALL
+    # readOnlyRootFilesystem: true
+    # runAsNonRoot: true
+    # runAsUser: 1000
+  # volumeMounts:
+  #   - name: volume_name
+  #     mountPath: /path/to/my/secret
+  # volumes:
+  #   - name: volume_name
+  #     secret:
+  #       defaultMode: 733
+  #       secretName: my_secret
+  #       items:
+  #       - key: my_secret.txt
+  #         path: name_of_file_in_container.txt
+  resources: {}
+    # We usually recommend not to specify default resources and to leave this as a conscious
+    # choice for the user. This also increases chances charts run on environments with little
+    # resources, such as Minikube. If you do want to specify resources, uncomment the following
+    # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+    # limits:
+    #   cpu: 100m
+    #   memory: 128Mi
+    # requests:
+    #   cpu: 100m
+    #   memory: 128Mi
   nodeSelector: {}
   tolerations: []
   affinity: {}
